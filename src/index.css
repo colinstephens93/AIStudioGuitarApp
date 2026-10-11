@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* 90s Workstation Bevels */
+  .bevel-out {
+    border-top: 2px solid #e0e0e0;
+    border-left: 2px solid #e0e0e0;
+    border-right: 2px solid #333333;
+    border-bottom: 2px solid #333333;
+    box-shadow: inset 1px 1px 0px #ffffff, inset -1px -1px 0px #555555;
+  }
+
+  .bevel-out-sm {
+    border-top: 1px solid #e0e0e0;
+    border-left: 1px solid #e0e0e0;
+    border-right: 1px solid #333333;
+    border-bottom: 1px solid #333333;
+  }
+
+  .bevel-in {
+    border-top: 2px solid #222222;
+    border-left: 2px solid #222222;
+    border-right: 2px solid #aaaaaa;
+    border-bottom: 2px solid #aaaaaa;
+    box-shadow: inset 1px 1px 0px #000000, inset -1px -1px 0px #666666;
+  }
+
+  .bevel-in-sm {
+    border-top: 1px solid #1a1a1a;
+    border-left: 1px solid #1a1a1a;
+    border-right: 1px solid #888888;
+    border-bottom: 1px solid #888888;
+  }
+
+  .crt-grid {
+    background-color: #040808;
+    background-image: 
+      linear-gradient(rgba(0, 180, 216, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 180, 216, 0.08) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .crt-scanlines {
+    background: linear-gradient(
+      rgba(18, 16, 16, 0) 50%, 
+      rgba(0, 0, 0, 0.25) 50%
+    );
+    background-size: 100% 4px;
+  }
+}
+
+body {
+  background-color: #555b62;
+  color: #1a1a1a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+

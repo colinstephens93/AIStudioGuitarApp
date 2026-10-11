@@ -1,0 +1,6 @@
+{
+  "name": "Guitar Tone Recipe Generator",
+  "description": "Generate accurate guitar tone recipes for Colin's rig with Gemini 3.8 Flash and strict rule checks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
