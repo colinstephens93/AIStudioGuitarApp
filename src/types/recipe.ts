@@ -47,6 +47,11 @@ export interface SongPartItem {
   pickup_position?: string;
 }
 
+export interface GroundingSource {
+  title: string;
+  uri: string;
+}
+
 export interface RecipeJson {
   song_metadata: SongMetadata;
   rig_selection: RigSelection;
@@ -68,11 +73,14 @@ export interface GenerateRecipeRequest {
     mimeType: string;
     base64Data: string;
   };
+  previousRecipeJson?: RecipeJson | null;
+  validationErrors?: string[];
 }
 
 export interface GenerateRecipeResponse {
   rawText: string;
   recipeJson?: RecipeJson | null;
-  callPath: "single_call" | "two_call_fallback";
+  callPath: "single_call" | "two_call_fallback" | "targeted_repair";
+  groundingSources?: GroundingSource[];
   error?: string;
 }

@@ -93,7 +93,9 @@ export function generateMarkdownRecipe(recipe: RecipeJson, modelName = "gemini-3
     for (const pt of parts) {
       let pVal = pt.active_pedals ?? "";
       if (Array.isArray(pVal)) {
-        pVal = pVal.join(", ");
+        pVal = pVal.length > 0 ? pVal.join(", ") : "None (Always-On Only)";
+      } else if (!String(pVal).trim()) {
+        pVal = "None (Always-On Only)";
       }
       const pName = pt.part_name ?? "";
       const pPickup = pt.pickup_position ?? "";

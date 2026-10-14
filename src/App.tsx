@@ -8,11 +8,14 @@ import { SPEC_FILES_MAP } from "./data/defaultSpecs";
 import {
   readGearMenus,
   loadInstructions,
+  buildDynamicSchema,
+  normalizeRecipeOutput,
   buildSpecsText,
   buildUserPrompt,
 } from "./utils/gearParser";
+import { analyzeAudioStem, StemDspMetrics } from "./utils/audioAnalyzer";
 import { runRuleChecks } from "./utils/ruleChecker";
-import { RecipeJson } from "./types/recipe";
+import { RecipeJson, GroundingSource } from "./types/recipe";
 import { SpecFilesManager } from "./components/SpecFilesManager";
 import { RecipeDisplay } from "./components/RecipeDisplay";
 import {
@@ -48,6 +51,7 @@ export default function App() {
     mimeType: string;
     base64Data: string;
     sizeKb: number;
+    metrics?: StemDspMetrics | null;
   } | null>(null);
 
   const [reportFile, setReportFile] = useState<{
@@ -62,6 +66,7 @@ export default function App() {
 
   const [currentRecipe, setCurrentRecipe] = useState<RecipeJson | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [groundingSources, setGroundingSources] = useState<GroundingSource[]>([]);
 
   // Parse gear menus whenever gear_list.md updates
   const { guitars, amps, pedals } = useMemo(() => {
@@ -69,16 +74,22 @@ export default function App() {
     return readGearMenus(gearListText);
   }, [specFiles]);
 
-  // Set initial default selections once guitars/amps are parsed
+  // Keep selections valid when guitars/amps are parsed or updated via custom gear_list.md
   useEffect(() => {
-    if (guitars.length > 0 && !selectedGuitarFull) {
-      setSelectedGuitarFull(guitars[0].fullName);
+    if (guitars.length > 0) {
+      const exists = guitars.some((g) => g.fullName === selectedGuitarFull);
+      if (!selectedGuitarFull || !exists) {
+        setSelectedGuitarFull(guitars[0].fullName);
+      }
     }
   }, [guitars, selectedGuitarFull]);
 
   useEffect(() => {
-    if (amps.length > 0 && !selectedAmpFull) {
-      setSelectedAmpFull(amps[0].fullName);
+    if (amps.length > 0) {
+      const exists = amps.some((a) => a.fullName === selectedAmpFull);
+      if (!selectedAmpFull || !exists) {
+        setSelectedAmpFull(amps[0].fullName);
+      }
     }
   }, [amps, selectedAmpFull]);
 
@@ -93,8 +104,8 @@ export default function App() {
     setCustomUploaded({});
   };
 
-  // Stem upload handler (.wav or .mp3)
-  const handleStemUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Stem upload handler (.wav or .mp3) with Web Audio DSP analysis
+  const handleStemUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -106,9 +117,17 @@ export default function App() {
     }
 
     setGeneralError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
+    const dataUrlPromise = new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = "";
+
+    try {
+      const [result, metrics] = await Promise.all([dataUrlPromise, analyzeAudioStem(file)]);
       const base64Data = result.split(",")[1] || "";
       const mimeType = file.type || (lowerName.endsWith(".wav") ? "audio/wav" : "audio/mp3");
 
@@ -117,10 +136,11 @@ export default function App() {
         mimeType,
         base64Data,
         sizeKb: Math.round(file.size / 1024),
+        metrics,
       });
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
+    } catch (err: any) {
+      setGeneralError(`Failed to read audio stem: ${err?.message || err}`);
+    }
   };
 
   // Report upload handler (.md or .json)
@@ -171,11 +191,18 @@ export default function App() {
 
     setGeneralError(null);
     setIsLoading(true);
-    setStatusMessage("PARSING SYSTEM INSTRUCTIONS & BLOCK 2 SCHEMA...");
+    setStatusMessage("PARSING SYSTEM INSTRUCTIONS & DYNAMIC BLOCK 2 SCHEMA...");
 
     try {
       const masterContent = specFiles["ai_tool_system_instructions_master.md"] || "";
-      const { systemInstruction, schemaDict } = loadInstructions(masterContent);
+      const { systemInstruction, schemaDict: baseSchema } = loadInstructions(masterContent);
+      const schemaDict = buildDynamicSchema(
+        baseSchema,
+        selectedGuitarFull,
+        selectedAmpFull,
+        pedals,
+        !!stemFile || !!reportFile
+      );
       const specsText = buildSpecsText(specFiles);
       const userPrompt = buildUserPrompt(
         songTitle.trim(),
@@ -184,7 +211,9 @@ export default function App() {
         selectedAmpFull,
         !!stemFile,
         reportFile?.filename,
-        reportFile?.content
+        reportFile?.content,
+        stemFile?.filename,
+        stemFile?.metrics
       );
 
       const stemPayload = stemFile
@@ -216,6 +245,9 @@ export default function App() {
 
       const data1 = await res1.json();
       let recipeJson = data1.recipeJson;
+      const collectedSources: GroundingSource[] = Array.isArray(data1.groundingSources)
+        ? data1.groundingSources
+        : [];
 
       if (!recipeJson && data1.rawText) {
         try {
@@ -223,10 +255,11 @@ export default function App() {
         } catch {}
       }
 
-      setStatusMessage("VERIFYING 14 TONE CONSTRAINTS & MATRIX RULES...");
+      setStatusMessage("NORMALIZING GEAR NAMES & VERIFYING TONE CONSTRAINTS...");
       let errors: string[] = [];
 
       if (recipeJson) {
+        recipeJson = normalizeRecipeOutput(recipeJson, selectedGuitarFull, selectedAmpFull, pedals);
         errors = runRuleChecks(
           recipeJson,
           selectedGuitarFull,
@@ -239,62 +272,67 @@ export default function App() {
         errors = ["Output was not valid JSON."];
       }
 
-      if (errors.length > 0) {
-        setStatusMessage(`VALIDATION CHECK FAILED (${errors.length} ERRORS) // RETRYING ONCE...`);
+      // Up to 2 targeted repair passes if any rule checks fail
+      const maxRepairPasses = 2;
+      for (let pass = 1; pass <= maxRepairPasses && errors.length > 0; pass++) {
+        setStatusMessage(
+          `RULE CHECK FOUND ${errors.length} ISSUE(S) // RUNNING TARGETED REPAIR PASS ${pass}/${maxRepairPasses}...`
+        );
 
-        let retryPrompt = userPrompt + "\n\nPrevious attempt failed the following checks:\n";
-        for (const e of errors) {
-          retryPrompt += `- ${e}\n`;
-        }
-        retryPrompt += "\nPlease correct these errors and provide the complete recipe JSON. Ensure all data matches strictly.";
-
-        const originalRecipe = recipeJson;
-        const originalErrors = errors;
+        const bestRecipeSoFar = recipeJson;
+        const bestErrorsSoFar = errors;
 
         try {
-          const res2 = await fetch("/api/generate-recipe", {
+          const resRepair = await fetch("/api/generate-recipe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               systemInstruction,
               schemaDict,
               specsText,
-              userPrompt: retryPrompt,
+              userPrompt,
               stemAudio: stemPayload,
+              previousRecipeJson: bestRecipeSoFar,
+              validationErrors: bestErrorsSoFar,
             }),
           });
 
-          if (res2.ok) {
-            const data2 = await res2.json();
-            let retryJson = data2.recipeJson;
-            if (!retryJson && data2.rawText) {
+          if (resRepair.ok) {
+            const dataRepair = await resRepair.json();
+            let candidateJson = dataRepair.recipeJson;
+            if (!candidateJson && dataRepair.rawText) {
               try {
-                retryJson = JSON.parse(data2.rawText);
+                candidateJson = JSON.parse(dataRepair.rawText);
               } catch {}
             }
 
-            if (retryJson) {
-              recipeJson = retryJson;
-              errors = runRuleChecks(
-                recipeJson,
+            if (candidateJson) {
+              candidateJson = normalizeRecipeOutput(
+                candidateJson,
+                selectedGuitarFull,
+                selectedAmpFull,
+                pedals
+              );
+              const candidateErrors = runRuleChecks(
+                candidateJson,
                 selectedGuitarFull,
                 selectedAmpFull,
                 pedals,
                 !!stemFile,
                 reportFile?.filename
               );
-            } else {
-              recipeJson = originalRecipe;
-              errors = originalErrors;
+
+              if (!bestRecipeSoFar || candidateErrors.length <= bestErrorsSoFar.length) {
+                recipeJson = candidateJson;
+                errors = candidateErrors;
+              }
             }
           } else {
-            recipeJson = originalRecipe;
-            errors = originalErrors;
+            break;
           }
         } catch (retryErr) {
-          console.warn("Retry failed, keeping first attempt:", retryErr);
-          recipeJson = originalRecipe;
-          errors = originalErrors;
+          console.warn(`Repair pass ${pass} failed, keeping best candidate so far:`, retryErr);
+          break;
         }
       }
 
@@ -304,6 +342,7 @@ export default function App() {
 
       setCurrentRecipe(recipeJson);
       setWarnings(errors);
+      setGroundingSources(collectedSources);
       setStatusMessage("");
     } catch (err: any) {
       console.error("Recipe generation failed:", err);
@@ -483,6 +522,7 @@ export default function App() {
                     setReportFile(null);
                     setCurrentRecipe(null);
                     setWarnings([]);
+                    setGroundingSources([]);
                   }}
                   className="bg-[#c2c7cd] hover:bg-[#d5d9de] active:bg-[#a8aeb5] bevel-out-sm py-1 font-bold text-black cursor-pointer"
                 >
@@ -655,18 +695,28 @@ export default function App() {
                     </div>
 
                     {stemFile ? (
-                      <div className="bg-black text-[#00ff66] p-1.5 bevel-in-sm flex items-center justify-between text-[11px]">
-                        <div className="truncate">
-                          <span className="font-bold">{stemFile.filename}</span>
-                          <span className="text-[9px] text-[#888] ml-1">({stemFile.sizeKb} KB)</span>
+                      <div className="bg-black text-[#00ff66] p-1.5 bevel-in-sm space-y-1 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <div className="truncate">
+                            <span className="font-bold">{stemFile.filename}</span>
+                            <span className="text-[9px] text-[#888] ml-1">({stemFile.sizeKb} KB)</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setStemFile(null)}
+                            className="bg-[#ff2a2a] text-white px-1 font-bold text-[10px] cursor-pointer"
+                          >
+                            X
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setStemFile(null)}
-                          className="bg-[#ff2a2a] text-white px-1 font-bold text-[10px] cursor-pointer"
-                        >
-                          X
-                        </button>
+                        {stemFile.metrics && (
+                          <div className="text-[9px] text-[#00e5ff] border-t border-[#222] pt-1 leading-tight">
+                            DSP: Peak {stemFile.metrics.peakDb} dB | RMS {stemFile.metrics.rmsDb} dB | Crest{" "}
+                            {stemFile.metrics.crestFactorDb} dB | Centroid {stemFile.metrics.spectralCentroidHz} Hz |
+                            Roll-off {stemFile.metrics.spectralRolloff85Hz} Hz
+                            {stemFile.metrics.estimatedBpm ? ` | ~${stemFile.metrics.estimatedBpm} BPM` : ""}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <label className="bg-[#cdd2d8] hover:bg-[#e0e4ea] bevel-out-sm px-2 py-1 flex items-center justify-center gap-1.5 text-black font-bold text-[11px] cursor-pointer">
@@ -765,7 +815,11 @@ export default function App() {
             {/* Diagnostic Output Screen */}
             {currentRecipe && (
               <div id="recipe-result">
-                <RecipeDisplay recipe={currentRecipe} warnings={warnings} />
+                <RecipeDisplay
+                  recipe={currentRecipe}
+                  warnings={warnings}
+                  groundingSources={groundingSources}
+                />
               </div>
             )}
           </div>

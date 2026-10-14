@@ -1,15 +1,16 @@
 import React, { useState } from "react";
-import { RecipeJson } from "../types/recipe";
+import { RecipeJson, GroundingSource } from "../types/recipe";
 import { safeOrder } from "../utils/ruleChecker";
 import { generateMarkdownRecipe } from "../utils/markdownRenderer";
-import { Download, Copy, Check, AlertTriangle, Terminal, Cpu, Sliders, Music, Radio } from "lucide-react";
+import { Download, Copy, Check, AlertTriangle, Terminal, Cpu, Sliders, Music, Radio, Globe } from "lucide-react";
 
 interface RecipeDisplayProps {
   recipe: RecipeJson;
   warnings: string[];
+  groundingSources?: GroundingSource[];
 }
 
-export const RecipeDisplay: React.FC<RecipeDisplayProps> = ({ recipe, warnings }) => {
+export const RecipeDisplay: React.FC<RecipeDisplayProps> = ({ recipe, warnings, groundingSources }) => {
   const [copied, setCopied] = useState(false);
 
   const meta = recipe.song_metadata || ({} as any);
@@ -295,8 +296,10 @@ export const RecipeDisplay: React.FC<RecipeDisplayProps> = ({ recipe, warnings }
                 <tbody className="divide-y divide-[#161f28]">
                   {(recipe.song_parts || []).map((pt, idx) => {
                     const activePedalsStr = Array.isArray(pt.active_pedals)
-                      ? pt.active_pedals.join(", ")
-                      : String(pt.active_pedals || "none");
+                      ? pt.active_pedals.length > 0
+                        ? pt.active_pedals.join(", ")
+                        : "None (Always-On Only)"
+                      : String(pt.active_pedals || "None (Always-On Only)");
                     return (
                       <tr key={idx} className="hover:bg-[#111922]">
                         <td className="py-1.5 px-3 text-white font-bold">{pt.part_name}</td>
@@ -319,6 +322,30 @@ export const RecipeDisplay: React.FC<RecipeDisplayProps> = ({ recipe, warnings }
             </div>
             <div className="text-xs text-[#ddd] leading-relaxed bg-[#0c1218] p-3 border border-[#222a35]">
               {recipe.notes}
+            </div>
+          </div>
+        )}
+
+        {/* Grounded Web Sources (if returned by Google Search) */}
+        {groundingSources && groundingSources.length > 0 && (
+          <div className="space-y-1 pt-1">
+            <div className="text-[10px] font-bold text-[#00e5ff] uppercase tracking-wider flex items-center gap-1">
+              <Globe className="w-3 h-3" />
+              <span>VERIFIED GROUNDING SOURCES ({groundingSources.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 bg-[#0c1218] p-2.5 border border-[#222a35] text-[11px]">
+              {groundingSources.map((src, idx) => (
+                <a
+                  key={idx}
+                  href={src.uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-[#161f28] hover:bg-[#1f2c3a] text-[#00e5ff] border border-[#00e5ff]/30 px-2 py-0.5 truncate max-w-xs"
+                  title={src.uri}
+                >
+                  [{idx + 1}] {src.title}
+                </a>
+              ))}
             </div>
           </div>
         )}
